@@ -1,0 +1,22 @@
+{
+  "dimensions": [
+    {
+      "name": "ankle",
+      "default": 0.046,
+      "multiplier_min": 1.0,
+      "multiplier_max": 1.5
+    },
+    {
+      "name": "robot",
+      "default": 0.075,
+      "multiplier_min": 1.0,
+      "multiplier_max": 1.5
+    }
+  ],
+  "geom_map" : {
+    "ankle": ["ankle_1", "ankle_2","ankle_3","ankle_4"],
+    "robot": ["robot", "robot2"]
+  }
+
+
+}

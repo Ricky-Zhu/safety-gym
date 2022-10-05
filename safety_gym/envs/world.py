@@ -6,6 +6,9 @@ import numpy as np
 from copy import deepcopy
 from collections import OrderedDict
 from mujoco_py import const, load_model_from_path, load_model_from_xml, MjSim, MjViewer, MjRenderContextOffscreen
+import mujoco_py
+import xml.etree.ElementTree as et
+import json
 
 import safety_gym
 import sys
@@ -68,7 +71,7 @@ class World:
         'observe_vision': False,
     }
 
-    def __init__(self, config={}, render_context=None):
+    def __init__(self, config={}, render_context=None, randomize_config_path=None):
         ''' config - JSON string or dict of configuration.  See self.parse() '''
         self.parse(config)  # Parse configuration
         self.first_reset = True
@@ -76,6 +79,7 @@ class World:
         self.render_context = render_context
         self.update_viewer_sim = False
         self.robot = Robot(self.robot_base)
+        self.randomize_config_path = randomize_config_path
 
     def parse(self, config):
         ''' Parse a config dict - see self.DEFAULT for description '''
@@ -103,8 +107,30 @@ class World:
         ''' Build a world, including generating XML and moving objects '''
         # Read in the base XML (contains robot, camera, floor, etc)
         self.robot_base_path = os.path.join(BASE_DIR, self.robot_base)
-        with open(self.robot_base_path) as f:
-            self.robot_base_xml = f.read()
+
+        ## before read the xml, randomize the parameters in the xml, only for doggo robot now
+        if self.randomize_config_path is not None:
+            if self.robot_base.split('/')[-1].split('.')[0] == 'doggo':
+                with open(self.randomize_config_path, mode='r') as f:
+                    config = json.load(f)
+                xml = et.parse(self.robot_base_path)
+                root = xml.getroot()
+
+                for entry in config['dimensions']:
+                    name = entry["name"]
+                    range_min = entry["default"] * entry["multiplier_min"]
+                    range_max = entry["default"] * entry["multiplier_max"]
+                    random_value = np.random.uniform(low=range_min, high=range_max)
+                    for geom in config['geom_map'][name]:
+                        temp = root.find(".//geom[@name='{}']".format(geom))
+                        temp.set('size', '{}'.format(random_value))
+
+                self.robot_base_xml = et.tostring(root, encoding='unicode', method='xml')
+            else:
+                assert "Not implemented other robots now!"
+        else:
+            with open(self.robot_base_path) as f:
+                self.robot_base_xml = f.read()
         self.xml = xmltodict.parse(self.robot_base_xml)  # Nested OrderedDict objects
 
         # Convenience accessor for xml dictionary
@@ -149,7 +175,6 @@ class World:
                 ''')
             self.xml['mujoco']['asset'] = asset['asset']
 
-
         # Add light to the XML dictionary
         light = xmltodict.parse('''<b>
             <light cutoff="100" diffuse="1 1 1" dir="0 0 -1" directional="true"
@@ -179,36 +204,35 @@ class World:
         # Build and add a tracking camera (logic needed to ensure orientation correct)
         theta = self.robot_rot
         xyaxes = dict(
-                    x1=np.cos(theta), 
-                    x2=-np.sin(theta),
-                    x3=0,
-                    y1=np.sin(theta),
-                    y2=np.cos(theta),
-                    y3=1
-                    )
+            x1=np.cos(theta),
+            x2=-np.sin(theta),
+            x3=0,
+            y1=np.sin(theta),
+            y2=np.cos(theta),
+            y3=1
+        )
         pos = dict(
-                xp=0*np.cos(theta) + (-2)*np.sin(theta),
-                yp=0*(-np.sin(theta)) + (-2)*np.cos(theta),
-                zp=2
-                )
+            xp=0 * np.cos(theta) + (-2) * np.sin(theta),
+            yp=0 * (-np.sin(theta)) + (-2) * np.cos(theta),
+            zp=2
+        )
         track_camera = xmltodict.parse('''<b>
             <camera name="track" mode="track" pos="{xp} {yp} {zp}" xyaxes="{x1} {x2} {x3} {y1} {y2} {y3}"/>
             </b>'''.format(**pos, **xyaxes))
         worldbody['body'][0]['camera'] = [
             worldbody['body'][0]['camera'],
             track_camera['b']['camera']
-            ]
-
+        ]
 
         # Add objects to the XML dictionary
         for name, object in self.objects.items():
             assert object['name'] == name, f'Inconsistent {name} {object}'
             object = object.copy()  # don't modify original object
             object['quat'] = rot2quat(object['rot'])
-            if name=='box':
+            if name == 'box':
                 dim = object['size'][0]
                 object['dim'] = dim
-                object['width'] = dim/2
+                object['width'] = dim / 2
                 object['x'] = dim
                 object['y'] = dim
                 body = xmltodict.parse('''
@@ -298,8 +322,8 @@ class World:
         ''' Build a new sim from a model if the model changed '''
         if state:
             old_state = self.sim.get_state()
-        #self.config.update(deepcopy(config))
-        #self.parse(self.config)
+        # self.config.update(deepcopy(config))
+        # self.parse(self.config)
         self.parse(config)
         self.build()
         if state:
@@ -364,9 +388,9 @@ class World:
         return self.data.get_body_xvelp(name).copy()
 
 
-
 class Robot:
     ''' Simple utility class for getting mujoco-specific info about a robot '''
+
     def __init__(self, path):
         base_path = os.path.join(BASE_DIR, path)
         self.sim = MjSim(load_model_from_path(base_path))
@@ -401,7 +425,7 @@ class Robot:
                     elif sensor_type == const.SENS_JOINTVEL:
                         self.hinge_vel_names.append(name)
                     else:
-                        t = self.sim.model.sensor_type[i]
+                        t = self.sim.model.sensor_type[id]
                         raise ValueError('Unrecognized sensor type {} for joint'.format(t))
                 elif joint_type == const.JNT_BALL:
                     if sensor_type == const.SENS_BALLQUAT:
@@ -414,3 +438,106 @@ class Robot:
                     # (That we are invariant to relative whole-world transforms)
                     # If slide joints are added we sould ensure this stays true!
                     raise ValueError('Slide joints in robots not currently supported')
+
+
+class RandomizeRobot:
+    ''' Simple utility class for getting mujoco-specific info about a robot '''
+
+    def __init__(self, path, **kwargs):
+
+        self.config_file = kwargs.get('randomize_config')
+        self.dimensions = []
+        self.dimension_map = []
+        self.suffixes = []
+        self._locate_randomize_parameters()
+
+        base_path = os.path.join(BASE_DIR, path)
+        self.reference_xml = et.parse(path)
+        self.sim = MjSim(load_model_from_path(base_path))
+        self.sim.forward()
+
+        # Needed to figure out z-height of free joint of offset body
+        self.z_height = self.sim.data.get_body_xpos('robot')[2]
+        # Get a list of geoms in the robot
+        self.geom_names = [n for n in self.sim.model.geom_names if n != 'floor']
+        # Needed to figure out the observation spaces
+        self.nq = self.sim.model.nq
+        self.nv = self.sim.model.nv
+        # Needed to figure out action space
+        self.nu = self.sim.model.nu
+        # Needed to figure out observation space
+        # See engine.py for an explanation for why we treat these separately
+        self.hinge_pos_names = []
+        self.hinge_vel_names = []
+        self.ballquat_names = []
+        self.ballangvel_names = []
+        self.sensor_dim = {}
+        for name in self.sim.model.sensor_names:
+            id = self.sim.model.sensor_name2id(name)
+            self.sensor_dim[name] = self.sim.model.sensor_dim[id]
+            sensor_type = self.sim.model.sensor_type[id]
+            if self.sim.model.sensor_objtype[id] == const.OBJ_JOINT:
+                joint_id = self.sim.model.sensor_objid[id]
+                joint_type = self.sim.model.jnt_type[joint_id]
+                if joint_type == const.JNT_HINGE:
+                    if sensor_type == const.SENS_JOINTPOS:
+                        self.hinge_pos_names.append(name)
+                    elif sensor_type == const.SENS_JOINTVEL:
+                        self.hinge_vel_names.append(name)
+                    else:
+                        t = self.sim.model.sensor_type[id]
+                        raise ValueError('Unrecognized sensor type {} for joint'.format(t))
+                elif joint_type == const.JNT_BALL:
+                    if sensor_type == const.SENS_BALLQUAT:
+                        self.ballquat_names.append(name)
+                    elif sensor_type == const.SENS_BALLANGVEL:
+                        self.ballangvel_names.append(name)
+                elif joint_type == const.JNT_SLIDE:
+                    # Adding slide joints is trivially easy in code,
+                    # but this removes one of the good properties about our observations.
+                    # (That we are invariant to relative whole-world transforms)
+                    # If slide joints are added we sould ensure this stays true!
+                    raise ValueError('Slide joints in robots not currently supported')
+
+    def _locate_randomize_parameters(self):
+        self.root = self.reference_xml.getroot()
+        with open(self.config_file, mode='r') as f:
+            config = json.load(f)
+
+        check_suffixes = config.get('suffixes', False)
+
+        for entry in config['dimensions']:
+            name = entry["name"]
+            self.dimension_map.append([])
+            for geom in config["geom_map"][name]:
+                self.dimension_map[-1].append(self.root.find(".//geom[@name='{}']".format(geom)))
+
+            if check_suffixes:
+                suffix = config['suffixes'].get(name, "")
+                self.suffixes.append(suffix)
+            else:
+                self.suffixes.append("")
+
+    def _create_xml(self):
+        for i, bodypart in enumerate(self.dimensions):
+            for geom in self.dimension_map[i]:
+                suffix = self.suffixes[i]
+                value = "{:3f} {}".format(self.dimensions[i].current_value, suffix)
+                geom.set('size', '{}'.format(value))
+
+        return et.tostring(self.root, encoding='unicode', method='xml')
+
+    def update_randomized_params(self):
+        xml = self._create_xml()
+        self._re_init(xml)
+
+    def _re_init(self, xml):
+        self.model = mujoco_py.load_model_from_xml(xml)
+        self.sim = mujoco_py.MjSim(self.model)
+        self.data = self.sim.data
+        self.init_qpos = self.data.qpos.ravel().copy()
+        self.init_qvel = self.data.qvel.ravel().copy()
+        observation, _reward, done, _info = self.step(np.zeros(self.model.nu))
+        assert not done
+        if self.viewer:
+            self.viewer.update_sim(self.sim)
