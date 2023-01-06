@@ -2,7 +2,7 @@
   "dimensions": [
     {
       "name": "ankle",
-      "default": 0.046,
+      "default": 0.036,
       "multiplier_min": 1.0,
       "multiplier_max": 1.5
     },

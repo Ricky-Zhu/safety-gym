@@ -7,3 +7,4 @@
 # We want baselines to treat these as mujoco envs, so we redirect from here,
 # and ensure the registry entries are pointing at this file as well.
 from safety_gym.envs.engine import *  # noqa
+from safety_gym.envs.random_engine import *

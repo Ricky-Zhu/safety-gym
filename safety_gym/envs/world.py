@@ -71,7 +71,7 @@ class World:
         'observe_vision': False,
     }
 
-    def __init__(self, config={}, render_context=None, randomize_config_path=None):
+    def __init__(self, config={}, render_context=None):
         ''' config - JSON string or dict of configuration.  See self.parse() '''
         self.parse(config)  # Parse configuration
         self.first_reset = True
@@ -79,7 +79,8 @@ class World:
         self.render_context = render_context
         self.update_viewer_sim = False
         self.robot = Robot(self.robot_base)
-        self.randomize_config_path = randomize_config_path
+
+        self.parameters = None
 
     def parse(self, config):
         ''' Parse a config dict - see self.DEFAULT for description '''
@@ -103,34 +104,60 @@ class World:
         dim = self.model.sensor_dim[id]
         return self.data.sensordata[adr:adr + dim].copy()
 
-    def build(self):
+    def build(self, randomize=False, parameters=None):
         ''' Build a world, including generating XML and moving objects '''
         # Read in the base XML (contains robot, camera, floor, etc)
         self.robot_base_path = os.path.join(BASE_DIR, self.robot_base)
 
         ## before read the xml, randomize the parameters in the xml, only for doggo robot now
-        if self.randomize_config_path is not None:
+        if randomize and parameters is not None:
             if self.robot_base.split('/')[-1].split('.')[0] == 'doggo':
-                with open(self.randomize_config_path, mode='r') as f:
-                    config = json.load(f)
+
+                front_density_mean, rear_density_mean, front_density_var, rear_density_var = parameters
+
                 xml = et.parse(self.robot_base_path)
                 root = xml.getroot()
 
-                for entry in config['dimensions']:
-                    name = entry["name"]
-                    range_min = entry["default"] * entry["multiplier_min"]
-                    range_max = entry["default"] * entry["multiplier_max"]
-                    random_value = np.random.uniform(low=range_min, high=range_max)
-                    for geom in config['geom_map'][name]:
-                        temp = root.find(".//geom[@name='{}']".format(geom))
-                        temp.set('size', '{}'.format(random_value))
+                # randomize the two density values
+                density_front = np.random.normal(loc=front_density_mean,
+                                                 scale=front_density_var)
+                density_rear = np.random.normal(loc=rear_density_mean,
+                                                scale=rear_density_var)
+
+                # set the self.parameters
+                self.parameters = [density_front, density_rear, 0.0, 0.0]
+
+                temp1 = root.find(".//geom[@name='{}']".format('robot'))
+                temp1.set('density', "{}".format(density_front))
+                temp2 = root.find(".//geom[@name='{}']".format('robot2'))
+                temp2.set('density', "{}".format(density_rear))
 
                 self.robot_base_xml = et.tostring(root, encoding='unicode', method='xml')
             else:
                 assert "Not implemented other robots now!"
         else:
-            with open(self.robot_base_path) as f:
-                self.robot_base_xml = f.read()
+            # once the parameters been changed it is recorded to ensure the next env.reset() the parameters values still
+            # the same instead of the original parameters value in safety_gym
+            if self.parameters is not None:
+                front_density_mean, rear_density_mean, front_density_var, rear_density_var = self.parameters
+                if self.robot_base.split('/')[-1].split('.')[0] == 'doggo':
+                    xml = et.parse(self.robot_base_path)
+                    root = xml.getroot()
+
+                    # randomize the two density values
+                    density_front = np.random.normal(loc=front_density_mean,
+                                                     scale=front_density_var)
+                    density_rear = np.random.normal(loc=rear_density_mean,
+                                                    scale=rear_density_var)
+                    temp1 = root.find(".//geom[@name='{}']".format('robot'))
+                    temp1.set('density', "{}".format(density_front))
+                    temp2 = root.find(".//geom[@name='{}']".format('robot2'))
+                    temp2.set('density', "{}".format(density_rear))
+
+                    self.robot_base_xml = et.tostring(root, encoding='unicode', method='xml')
+            else:
+                with open(self.robot_base_path) as f:
+                    self.robot_base_xml = f.read()
         self.xml = xmltodict.parse(self.robot_base_xml)  # Nested OrderedDict objects
 
         # Convenience accessor for xml dictionary
@@ -318,14 +345,14 @@ class World:
         # Recompute simulation intrinsics from new position
         self.sim.forward()
 
-    def rebuild(self, config={}, state=True):
+    def rebuild(self, config={}, state=True, randomize=False, parameters=None):
         ''' Build a new sim from a model if the model changed '''
         if state:
             old_state = self.sim.get_state()
         # self.config.update(deepcopy(config))
         # self.parse(self.config)
         self.parse(config)
-        self.build()
+        self.build(randomize=randomize, parameters=parameters)
         if state:
             self.sim.set_state(old_state)
         self.sim.forward()

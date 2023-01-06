@@ -80,11 +80,11 @@ def quat2zalign(quat):
     return a ** 2 - b ** 2 - c ** 2 + d ** 2
 
 
-class Engine(gym.Env, gym.utils.EzPickle):
+class RandomizeEngine(gym.Env, gym.utils.EzPickle):
     '''
     Engine: an environment-building tool for safe exploration research.
 
-    The Engine() class entails everything to do with the tasks and safety 
+    The Engine() class entails everything to do with the tasks and safety
     requirements of Safety Gym environments. An Engine() uses a World() object
     to interface to MuJoCo. World() configurations are inferred from Engine()
     configurations, so an environment in Safety Gym can be completely specified
@@ -293,12 +293,14 @@ class Engine(gym.Env, gym.utils.EzPickle):
         '_seed': None,  # Random state seed (avoid name conflict with self.seed)
     }
 
-    def __init__(self, config={}):
+    def __init__(self, **kwargs):
         # First, parse configuration. Important note: LOTS of stuff happens in
         # parse, and many attributes of the class get set through setattr. If you
-        # are trying to track down where an attribute gets initially set, and 
+        # are trying to track down where an attribute gets initially set, and
         # can't find it anywhere else, it's probably set via the config dict
         # and this parse function.
+
+        config = kwargs['config']
         self.parse(config)
         gym.utils.EzPickle.__init__(self, config=config)
 
@@ -592,23 +594,23 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return (xmin + keepout, ymin + keepout, xmax - keepout, ymax - keepout)
 
     def draw_placement(self, placements, keepout):
-        ''' 
+        '''
         Sample an (x,y) location, based on potential placement areas.
 
-        Summary of behavior: 
+        Summary of behavior:
 
-        'placements' is a list of (xmin, xmax, ymin, ymax) tuples that specify 
-        rectangles in the XY-plane where an object could be placed. 
+        'placements' is a list of (xmin, xmax, ymin, ymax) tuples that specify
+        rectangles in the XY-plane where an object could be placed.
 
         'keepout' describes how much space an object is required to have
         around it, where that keepout space overlaps with the placement rectangle.
 
         To sample an (x,y) pair, first randomly select which placement rectangle
         to sample from, where the probability of a rectangle is weighted by its
-        area. If the rectangles are disjoint, there's an equal chance the (x,y) 
+        area. If the rectangles are disjoint, there's an equal chance the (x,y)
         location will wind up anywhere in the placement space. If they overlap, then
         overlap areas are double-counted and will have higher density. This allows
-        the user some flexibility in building placement distributions. Finally, 
+        the user some flexibility in building placement distributions. Finally,
         randomly draw a uniform point within the selected rectangle.
 
         '''
@@ -787,6 +789,9 @@ class Engine(gym.Env, gym.utils.EzPickle):
         ''' Reset internal state for building '''
         self.layout = None
 
+    def set_with_var(self, with_var):
+        pass
+
     def build_goal(self):
         ''' Build a new goal position, maybe with resampling due to hazards '''
         if self.task == 'goal':
@@ -842,7 +847,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         ''' Pick a new goal button, maybe with resampling due to hazards '''
         self.goal_button = self.rs.choice(self.buttons_num)
 
-    def build(self):
+    def build(self, randomize=False, parameters=None):
         ''' Build a new physics simulation environment '''
         # Sample object positions
         self.build_layout()
@@ -851,12 +856,12 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.world_config_dict = self.build_world_config()
 
         if self.world is None:
-            self.world = World(self.world_config_dict)
+            self.world = World(self.world_config_dict, render_context=None)
             self.world.reset()
-            self.world.build()
+            self.world.build(randomize=randomize, parameters=parameters)
         else:
             self.world.reset(build=False)
-            self.world.rebuild(self.world_config_dict, state=False)
+            self.world.rebuild(self.world_config_dict, state=False, randomize=randomize, parameters=parameters)
         # Redo a small amount of work, and setup initial goal state
         self.build_goal()
 
@@ -865,6 +870,30 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
         # Save last subtree center of mass
         self.last_subtreecom = self.world.get_sensor('subtreecom')
+
+    def set_values(self, front_density_mean, rear_density_mean, front_density_var, rear_density_var):
+        ''' Reset the physics simulation and return observation and randomize the robot configs'''
+        parameters = [front_density_mean, rear_density_mean, front_density_var, rear_density_var]
+        self._seed += 1  # Increment seed
+        self.rs = np.random.RandomState(self._seed)
+        self.done = False
+        self.steps = 0  # Count of steps taken in this episode
+        # Set the button timer to zero (so button is immediately visible)
+        self.buttons_timer = 0
+
+        self.clear()
+        self.build(randomize=True, parameters=parameters)
+        # Save the layout at reset
+        self.reset_layout = deepcopy(self.layout)
+
+        cost = self.cost()
+        assert cost['cost'] == 0, f'World has starting cost! {cost}'
+
+        # Reset stateful parts of the environment
+        self.first_reset = False  # Built our first world successfully
+
+        # Return an observation
+        return self.obs()
 
     def reset(self):
         ''' Reset the physics simulation and return observation '''
@@ -1501,6 +1530,3 @@ class Engine(gym.Env, gym.utils.EzPickle):
             self.viewer._markers[:] = []
             self.viewer._overlay.clear()
             return data[::-1, :, :]
-
-
-
